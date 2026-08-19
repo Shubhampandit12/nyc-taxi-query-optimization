@@ -1,0 +1,9 @@
+Wall clock time (measured via Python, single run): 1.87s
+Rows returned: 6802
+
+-> Sort: total_revenue DESC  (actual time=1833..1834 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=1830..1830 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=1830..1830 rows=6802 loops=1)
+            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.12e+6 rows=1.82e+6) (actual time=0.0183..1670 rows=504462 loops=1)
+                -> Covering index range scan on taxi_trips using idx_composite over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)  (cost=1.12e+6 rows=5.47e+6) (actual time=0.0158..1407 rows=3.34e+6 loops=1)
+
