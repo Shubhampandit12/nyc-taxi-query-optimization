@@ -17,6 +17,10 @@ to **~1.7 seconds** (a real, measured ~4x improvement) using a
 composite covering index, and separately verifies what indexing and
 partitioning each actually contribute on their own — including two
 results that didn't match the obvious expectation (see Section 4a).
+Two more structurally different queries (Section 6b) confirm the
+underlying mechanisms generalize, while showing the *size* of the win
+ranges from ~4x to ~1900x to essentially nothing, entirely depending
+on how selective the query actually is.
 
 ## 2. Dataset
 
@@ -314,6 +318,53 @@ its write-cost back on a table large enough that a single partition
 still doesn't fit in memory, or on a workload with genuinely
 different (non-covered) query patterns per partition — neither is
 true for this 11.2M-row dataset.
+
+## 6b. Testing Whether This Generalizes: Two More Query Shapes
+
+Everything above optimizes one query (`revenue_rollup`: a one-month
+date range + distance filter, ~31% selectivity). Optimizing one query
+four ways is a narrower story than "I can optimize queries" — so
+`benchmark_query.py` now supports two more, structurally different
+shapes (`--query point_lookup` / `--query wide_aggregation`), run
+across all 4 stages the same way. Full run-by-run data is in
+[`explain_outputs/multi_query_results.txt`](explain_outputs/multi_query_results.txt).
+
+**`point_lookup`** — a single hour, single pickup zone, no
+aggregation (175 matching rows; high selectivity):
+
+| Stage | Mean | vs. baseline |
+|---|---|---|
+| 1. No index | 7.18s | — |
+| 2. Single index | 0.0146s | **~492x faster** |
+| 3. Composite index | 0.0038s | **~1889x faster** (best) |
+| 4. Partitioned + index | 0.0046s | ~1561x, same as stage 3 (noise) |
+
+**`wide_aggregation`** — no date filter at all, grouped by zone (low
+selectivity — touches the full 3-month table):
+
+| Stage | Mean | vs. baseline |
+|---|---|---|
+| 1. No index | 8.61s (stdev 2.36s — extremely noisy) | — |
+| 2. Single index | 5.96s | modest, index not actually used |
+| 3. Composite index | 5.70s | modest (covering scan, no heap fetches) |
+| 4. Partitioned + index | 4.96s (stdev 0.14s — most consistent) | modest; all 4 partitions still scanned |
+
+**What this shows:** the mechanisms explained in Section 5 hold up
+consistently — a B-Tree index only gets used when the optimizer
+judges it selective enough, and here the *same* `idx_pickup_time`
+index that was rejected for `revenue_rollup` (31% selectivity) is
+used and delivers a ~492x win for `point_lookup` (a tiny fraction of
+a percent selectivity). But the **magnitude** of every technique's
+benefit is entirely selectivity-dependent, not a fixed multiplier:
+the composite index goes from "4x" (revenue_rollup) to "1889x"
+(point_lookup) to "barely better than a table scan" (wide_aggregation,
+where it can't skip any rows, just avoid heap fetches). Partitioning
+is the clearest case: `EXPLAIN` confirms it prunes to one partition
+for `point_lookup` (redundant with the index, as in Section 5) but
+touches **all four partitions** for `wide_aggregation`, since that
+query has no date predicate to prune with — partitioning's benefit is
+entirely conditional on the query actually filtering the partition
+key, not something a table gets "for free" once partitioned.
 
 ## 7. Business Analytics Queries
 

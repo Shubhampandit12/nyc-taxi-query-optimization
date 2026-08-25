@@ -1,0 +1,80 @@
+Captured via python_scripts/benchmark_query.py --query point_lookup
+and --query wide_aggregation (warm-up + 7 runs each), across all 4
+stages, against the real 11.2M-row dataset. Complements the original
+revenue_rollup query (explain_outputs/01-04*.txt) with two
+structurally different shapes:
+
+  point_lookup:      single hour + single pickup zone, no aggregation
+                      (highly selective -- 175 matching rows)
+  wide_aggregation:   no date filter at all, grouped by zone
+                      (low selectivity -- touches the full 3-month table)
+
+
+=== point_lookup ===
+
+Stage 1: baseline (no index)
+  runs (s): 6.1716, 6.6407, 7.9333, 7.4603, 7.1879, 7.1268, 7.7451
+  mean=7.1808s  stdev=0.6159s
+  -> Table scan on taxi_trips (actual time=1.36..7758 rows=11.2e+6 loops=1)
+
+Stage 2: single index (idx_pickup_time)
+  runs (s): 0.0156, 0.0143, 0.0146, 0.0148, 0.0141, 0.0140, 0.0146
+  mean=0.0146s  stdev=0.0005s
+  -> Index range scan using idx_pickup_time (actual time=0.0282..12.7 rows=7129 loops=1)
+  Index USED here (unlike the revenue_rollup query) -- 8x492 vs baseline.
+
+Stage 3: composite index (idx_composite)
+  runs (s): 0.0036, 0.0034, 0.0045, 0.0049, 0.0035, 0.0034, 0.0036
+  mean=0.0038s  stdev=0.0006s
+  -> Index range scan using idx_composite (actual time=0.0227..1.68 rows=175 loops=1)
+
+Stage 4: partitioned + composite index
+  runs (s): 0.0043, 0.0044, 0.0060, 0.0046, 0.0041, 0.0052, 0.0038
+  mean=0.0046s  stdev=0.0007s
+  -> Index range scan using idx_composite (actual time=0.019..1.59 rows=175 loops=1)
+  partitions: p_jan (only -- pruning correctly engages)
+
+Summary (point_lookup): 7.18s -> 0.0146s -> 0.0038s -> 0.0046s
+  single index:    ~492x faster than baseline
+  composite index: ~1889x faster than baseline (best)
+  partitioned:     ~1561x faster than baseline, statistically the same
+                    as stage 3 (both near the floor of what a 175-row
+                    result can take; partitioning adds nothing here)
+
+
+=== wide_aggregation ===
+
+Stage 1: baseline (no index)
+  runs (s): 6.4155, 6.2391, 7.9928, 12.5206, 8.9298, 10.9207, 7.2464
+  mean=8.6093s  stdev=2.3598s   <- extremely noisy, 27% of the mean
+  -> Table scan on taxi_trips (actual time=0.735..6011 rows=11.2e+6 loops=1)
+
+Stage 2: single index (idx_pickup_time)
+  runs (s): 8.5323, 5.5179, 5.5099, 5.5278, 5.5286, 5.5536, 5.5684
+  mean=5.9626s  stdev=1.1333s
+  -> Table scan on taxi_trips (index NOT used -- no date predicate exists for it to help with)
+
+Stage 3: composite index (idx_composite)
+  runs (s): 9.4581, 5.0521, 4.7794, 4.9417, 6.0566, 4.8670, 4.7633
+  mean=5.7026s  stdev=1.7158s
+  -> Covering index scan using idx_composite (full scan, not a range scan -- no heap
+     fetches, but every row is still touched since nothing narrows the leading column)
+
+Stage 4: partitioned + composite index
+  runs (s): 5.2863, 4.9186, 4.8890, 4.9051, 4.8993, 4.9358, 4.9097
+  mean=4.9634s  stdev=0.1432s   <- by far the most consistent of the 4
+  -> Covering index scan using idx_composite
+  partitions: p_jan,p_feb,p_mar,p_future (ALL FOUR -- no pruning possible,
+     since the query has no date predicate to prune with)
+
+Summary (wide_aggregation): 8.61s -> 5.96s -> 5.70s -> 4.96s
+  No stage delivers anything close to the point_lookup or revenue_rollup
+  wins. The composite index helps modestly (covering scan avoids heap
+  fetches) but can't skip any rows. Partitioning scans all 4 partitions
+  (confirmed in EXPLAIN) -- its mean is lowest here, but with all
+  partitions touched, that's more likely session-to-session cache
+  variance than a real partitioning effect; its low stdev (0.14s vs.
+  1.7s for stage 3) is the more meaningful signal -- partitioned InnoDB
+  files may simply have more consistent I/O patterns than one large
+  unpartitioned file, worth noting but not the mechanism this project
+  set out to prove (pruning), since no pruning occurs here.
