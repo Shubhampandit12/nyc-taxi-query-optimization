@@ -38,6 +38,39 @@ file). They fall outside the `p_jan`/`p_feb`/`p_mar` partitions and
 land in the catch-all `p_future` partition; they don't affect the
 benchmark query, which filters to January only.
 
+### 2a. Schema Design
+
+The first version of this project let `pandas.to_sql()` create
+`taxi_trips` implicitly from the parquet dtypes. That produced a
+schema nobody actually designed: `fare_amount`, `tip_amount`,
+`total_amount` etc. as `DOUBLE` (binary floating point — not exact
+for currency, and error compounds across `SUM`/`AVG`), small
+categorical columns like `passenger_count` and `RatecodeID` as
+`DOUBLE` instead of an integer type, `store_and_fwd_flag` as `TEXT`
+instead of `CHAR(1)`, and no primary key at all.
+
+`sql_migrations/01_create_table.sql` now defines the table explicitly,
+with types picked from the dataset's real value ranges rather than
+guessed: `PULocationID`/`DOLocationID` reach 265 (needs `SMALLINT`,
+overflows `TINYINT`'s 255 max), `RatecodeID` reaches 99, `fare_amount`
+has real negative values and outliers up to ~$863K (still fits
+`DECIMAL(10,2)`) — all money columns are `DECIMAL(10,2)`, and a
+surrogate `trip_id BIGINT UNSIGNED AUTO_INCREMENT` primary key was
+added, which also closes a real gap: without a PK or unique
+constraint, a partial ingest re-run could silently duplicate rows.
+`04_partitioned_table.sql` matches this schema; its primary key is
+composite (`trip_id, tpep_pickup_datetime`) since MySQL requires every
+unique key on a partitioned table to include the partitioning column.
+
+**Note on the results below:** the numbers in Section 4 were captured
+against the original pandas-inferred schema (the state the data was
+actually in when benchmarked), not this corrected one. Column types
+don't change which rows match the `WHERE`/`GROUP BY` predicates or
+how many rows the covering index has to scan, so the performance
+comparison across indexing/partitioning stages still holds — but if
+you reproduce this from scratch with the fixed schema, don't be
+surprised if absolute numbers shift slightly.
+
 ## 3. The Analytical Query
 
 ```sql
@@ -196,10 +229,16 @@ most per trip ($59.07 avg fare vs $10.05 for short trips).
    [TLC trip record page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page).
 2. Set up MySQL locally and create a database: `CREATE DATABASE taxi_db;`
 3. `python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
-4. `export TAXI_DB_PASSWORD=your_mysql_password`
-5. Run `python python_scripts/ingest_taxi_data.py` to load the parquet
-   files into `taxi_trips`.
-6. Run `sql_migrations/01_create_table.sql` to inspect the schema.
+4. `export TAXI_DB_PASSWORD=your_mysql_password` (optionally
+   `export TAXI_DB_USER=your_user`, defaults to `root`)
+5. Run `sql_migrations/01_create_table.sql` to create the `taxi_trips`
+   table with an explicit, designed schema (see Section 2a below —
+   this used to be pandas-inferred, which is why earlier versions of
+   this README described running this step *after* ingestion).
+6. Run `python python_scripts/ingest_taxi_data.py` to load the parquet
+   files into `taxi_trips`. Idempotent per month: re-running it after
+   a partial failure skips months that already have rows instead of
+   duplicating them.
 7. Run `sql_queries/baseline_query.sql` and save the `EXPLAIN ANALYZE`
    output — this is your baseline.
 8. Run `sql_migrations/02_single_index.sql`, then re-run the same

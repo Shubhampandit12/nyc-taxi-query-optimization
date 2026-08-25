@@ -4,31 +4,34 @@
 
 USE taxi_db;
 
--- Step 1: confirm the source table structure matches what's below
--- (from sql_migrations/01_create_table.sql -> SHOW CREATE TABLE taxi_trips)
-
--- Step 2: create the partitioned table
+-- Step 1: create the partitioned table, matching the corrected schema
+-- from sql_migrations/01_create_table.sql. Note: MySQL requires every
+-- unique key on a partitioned table to include the partitioning
+-- column, so the primary key here is composite
+-- (trip_id, tpep_pickup_datetime) rather than trip_id alone.
 CREATE TABLE taxi_trips_partitioned (
-    VendorID               INT,
-    tpep_pickup_datetime    DATETIME NOT NULL,
-    tpep_dropoff_datetime   DATETIME,
-    passenger_count         DOUBLE,
-    trip_distance           DOUBLE,
-    RatecodeID              DOUBLE,
-    store_and_fwd_flag      TEXT,
-    PULocationID             INT,
-    DOLocationID             INT,
-    payment_type             BIGINT,
-    fare_amount              DOUBLE,
-    extra                    DOUBLE,
-    mta_tax                  DOUBLE,
-    tip_amount                DOUBLE,
-    tolls_amount               DOUBLE,
-    improvement_surcharge     DOUBLE,
-    total_amount               DOUBLE,
-    congestion_surcharge       DOUBLE,
-    Airport_fee                 DOUBLE,
-    cbd_congestion_fee          DOUBLE
+    trip_id                 BIGINT UNSIGNED NOT NULL,
+    VendorID                 TINYINT UNSIGNED,
+    tpep_pickup_datetime      DATETIME NOT NULL,
+    tpep_dropoff_datetime     DATETIME,
+    passenger_count            TINYINT UNSIGNED,
+    trip_distance                DECIMAL(8,2),
+    RatecodeID                     TINYINT UNSIGNED,
+    store_and_fwd_flag               CHAR(1),
+    PULocationID                       SMALLINT UNSIGNED,
+    DOLocationID                        SMALLINT UNSIGNED,
+    payment_type                         TINYINT UNSIGNED,
+    fare_amount                           DECIMAL(10,2),
+    extra                                   DECIMAL(10,2),
+    mta_tax                                  DECIMAL(10,2),
+    tip_amount                                DECIMAL(10,2),
+    tolls_amount                               DECIMAL(10,2),
+    improvement_surcharge                       DECIMAL(10,2),
+    total_amount                                 DECIMAL(10,2),
+    congestion_surcharge                          DECIMAL(10,2),
+    Airport_fee                                    DECIMAL(10,2),
+    cbd_congestion_fee                              DECIMAL(10,2),
+    PRIMARY KEY (trip_id, tpep_pickup_datetime)
 )
 PARTITION BY RANGE COLUMNS(tpep_pickup_datetime) (
     PARTITION p_jan    VALUES LESS THAN ('2025-02-01'),
@@ -37,17 +40,31 @@ PARTITION BY RANGE COLUMNS(tpep_pickup_datetime) (
     PARTITION p_future VALUES LESS THAN (MAXVALUE)
 );
 
--- Step 3: migrate the data
-INSERT INTO taxi_trips_partitioned SELECT * FROM taxi_trips;
+-- Step 2: migrate the data (explicit column list, since the two
+-- tables no longer share identical column sets by coincidence)
+INSERT INTO taxi_trips_partitioned (
+    trip_id, VendorID, tpep_pickup_datetime, tpep_dropoff_datetime,
+    passenger_count, trip_distance, RatecodeID, store_and_fwd_flag,
+    PULocationID, DOLocationID, payment_type, fare_amount, extra,
+    mta_tax, tip_amount, tolls_amount, improvement_surcharge,
+    total_amount, congestion_surcharge, Airport_fee, cbd_congestion_fee
+)
+SELECT
+    trip_id, VendorID, tpep_pickup_datetime, tpep_dropoff_datetime,
+    passenger_count, trip_distance, RatecodeID, store_and_fwd_flag,
+    PULocationID, DOLocationID, payment_type, fare_amount, extra,
+    mta_tax, tip_amount, tolls_amount, improvement_surcharge,
+    total_amount, congestion_surcharge, Airport_fee, cbd_congestion_fee
+FROM taxi_trips;
 
 -- Verify row count matches the original table
 SELECT COUNT(*) FROM taxi_trips_partitioned;
 
--- Step 4: add the composite covering index to the partitioned table
+-- Step 3: add the composite covering index to the partitioned table
 CREATE INDEX idx_composite
 ON taxi_trips_partitioned(tpep_pickup_datetime, trip_distance,
                            PULocationID, fare_amount, tip_amount);
 
--- Step 5: re-run the benchmark query (pointed at taxi_trips_partitioned)
--- and save the EXPLAIN ANALYZE output to
+-- Step 4: re-run the benchmark query (pointed at taxi_trips_partitioned)
+-- via python_scripts/benchmark_query.py and save the output to
 -- explain_outputs/04_partitioned_explain.txt
