@@ -73,6 +73,18 @@ comparison across indexing/partitioning stages still holds — but if
 you reproduce this from scratch with the fixed schema, don't be
 surprised if absolute numbers shift slightly.
 
+### 2b. Database User
+
+Earlier versions of this project connected as `root` (see
+`ingest_taxi_data.py`'s original connection string). Using the
+database superuser for an application connection is unnecessary risk
+— a bug or injected input in application code shouldn't be able to
+touch anything outside `taxi_db`. Both `ingest_taxi_data.py` and
+`benchmark_query.py` now read `TAXI_DB_USER` (default `root`, kept
+only as a fallback so the scripts still run without extra setup) —
+Section 8's reproduction steps create and use a scoped `taxi_app`
+user instead, granted privileges on `taxi_db` only.
+
 ## 3. The Analytical Query
 
 ```sql
@@ -326,10 +338,18 @@ a general-purpose speedup for the whole table.
 1. Download the NYC TLC Yellow Taxi parquet files for the months you
    want (2025-01 through 2025-03 used here) from the
    [TLC trip record page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page).
-2. Set up MySQL locally and create a database: `CREATE DATABASE taxi_db;`
+2. Set up MySQL locally and create a database plus a scoped
+   application user — don't use `root` for this (see Section 2b):
+   ```sql
+   CREATE DATABASE taxi_db;
+   CREATE USER 'taxi_app'@'localhost' IDENTIFIED BY 'your_password';
+   GRANT ALL PRIVILEGES ON taxi_db.* TO 'taxi_app'@'localhost';
+   FLUSH PRIVILEGES;
+   ```
 3. `python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
-4. `export TAXI_DB_PASSWORD=your_mysql_password` (optionally
-   `export TAXI_DB_USER=your_user`, defaults to `root`)
+4. `export TAXI_DB_USER=taxi_app TAXI_DB_PASSWORD=your_password`
+   (both scripts default `TAXI_DB_USER` to `root` if unset, purely as
+   a fallback — `taxi_app` is the intended user)
 5. Run `sql_migrations/01_create_table.sql` to create the `taxi_trips`
    table with an explicit, designed schema (see Section 2a above —
    this used to be pandas-inferred, which is why earlier versions of
