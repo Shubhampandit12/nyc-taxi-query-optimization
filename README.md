@@ -195,7 +195,7 @@ most per trip ($59.07 avg fare vs $10.05 for short trips).
    want (2025-01 through 2025-03 used here) from the
    [TLC trip record page](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page).
 2. Set up MySQL locally and create a database: `CREATE DATABASE taxi_db;`
-3. `python -m venv venv && source venv/bin/activate && pip install pandas sqlalchemy pymysql pyarrow`
+3. `python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
 4. `export TAXI_DB_PASSWORD=your_mysql_password`
 5. Run `python python_scripts/ingest_taxi_data.py` to load the parquet
    files into `taxi_trips`.
