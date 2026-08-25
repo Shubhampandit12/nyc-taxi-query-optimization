@@ -451,3 +451,34 @@ a general-purpose speedup for the whole table.
     confirm partition pruning with
     `EXPLAIN FORMAT=TRADITIONAL <query>` (check the `partitions` column).
 12. Run `sql_queries/business_queries.sql` for the analytics queries.
+
+## 9. Tests
+
+`tests/` covers the SQL migrations' correctness on a throwaway
+`taxi_db_test` database (created and dropped per test run, never
+touching real data): the corrected schema's types and primary key
+(Section 2a), that the partitioned table ends up with exactly the 4
+expected partitions, that migrating data from `taxi_trips` to
+`taxi_trips_partitioned` preserves every row *and* routes it to the
+correct partition, and the ingestion idempotency guard's detection
+logic. This intentionally does not test against the full 11.2M-row
+dataset — that's what Sections 4-6b already do, with real timing data
+that a schema-correctness test doesn't need.
+
+```
+pip install -r requirements-dev.txt
+export TAXI_DB_USER=root TAXI_DB_PASSWORD=your_root_password
+pytest tests/ -v
+```
+
+Needs `CREATE DATABASE`/`DROP DATABASE` privilege for the throwaway
+test database, which `taxi_app` (Section 2b) deliberately doesn't
+have — that's the scoping working as intended, not a gap. Use `root`
+(or grant a separate admin account those two privileges) for running
+tests locally; the actual data-touching scripts
+(`ingest_taxi_data.py`, `benchmark_query.py`, `measure_write_cost.py`)
+still default to `taxi_app` via `TAXI_DB_USER`.
+
+Runs in CI on every push/PR via
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml), against
+a fresh MySQL 8.0 service container.
