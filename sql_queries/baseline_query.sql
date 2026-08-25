@@ -18,7 +18,6 @@ WHERE trip_distance > 5
 GROUP BY PULocationID, DATE(tpep_pickup_datetime)
 ORDER BY total_revenue DESC;
 
--- Wall-clock timing for the README comparison table:
--- SET profiling = 1;
--- <run the SELECT above, without EXPLAIN ANALYZE>
--- SHOW PROFILES;
+-- Wall-clock timing for the README comparison table (warm-up + 7 runs,
+-- mean/stddev, not a single-run stopwatch capture):
+-- python python_scripts/benchmark_query.py --table taxi_trips

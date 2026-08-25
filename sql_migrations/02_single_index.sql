@@ -5,6 +5,5 @@ USE taxi_db;
 
 CREATE INDEX idx_pickup_time ON taxi_trips(tpep_pickup_datetime);
 
--- Re-run the benchmark query from sql_queries/baseline_query.sql (unchanged)
--- and save the EXPLAIN ANALYZE output to
--- explain_outputs/02_single_index_explain.txt
+-- Re-run the benchmark: python python_scripts/benchmark_query.py --table taxi_trips
+-- and save the output to explain_outputs/02_single_index_explain.txt
