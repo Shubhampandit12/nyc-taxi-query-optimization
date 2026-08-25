@@ -1,9 +1,17 @@
-Wall clock time (measured via Python, single run): 7.94s
+Captured via python_scripts/benchmark_query.py --table taxi_trips
+(warm-up + 7 timed runs, against the real 11,198,026-row dataset)
+
+Per-run wall-clock times (s): 6.7749, 9.5340, 6.7326, 6.2613, 6.8317, 6.1758, 6.6339
+mean=6.9920s  stddev=1.1496s  min=6.1758s  max=9.5340s
 Rows returned: 6802
 
--> Sort: total_revenue DESC  (actual time=6585..6586 rows=6802 loops=1)
-    -> Table scan on <temporary>  (actual time=6577..6578 rows=6802 loops=1)
-        -> Aggregate using temporary table  (actual time=6577..6577 rows=6802 loops=1)
-            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.21e+6 rows=405087) (actual time=0.473..6411 rows=504462 loops=1)
-                -> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.439..5546 rows=11.2e+6 loops=1)
+Note: stddev is ~16% of the mean here -- this is exactly why a single
+run isn't a benchmark. An earlier version of this file reported one
+7.94s capture; that single number sits within this run's range but
+tells you nothing about the spread.
 
+-> Sort: total_revenue DESC  (actual time=6656..6657 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=6652..6653 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=6652..6652 rows=6802 loops=1)
+            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.21e+6 rows=403500) (actual time=1.29..6488 rows=504462 loops=1)
+                -> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=1.1..5638 rows=11.2e+6 loops=1)

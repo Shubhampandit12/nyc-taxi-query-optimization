@@ -1,9 +1,32 @@
-Wall clock time (measured via Python, single run): 6.77s
+Captured via python_scripts/benchmark_query.py --table taxi_trips
+(warm-up + 7 timed runs, after CREATE INDEX idx_pickup_time)
+
+Per-run wall-clock times (s): 6.3042, 6.4918, 6.5373, 6.9613, 6.2763, 7.4039, 7.2116
+mean=6.7409s  stddev=0.4509s  min=6.2763s  max=7.4039s
 Rows returned: 6802
 
--> Sort: total_revenue DESC  (actual time=6910..6911 rows=6802 loops=1)
-    -> Table scan on <temporary>  (actual time=6903..6904 rows=6802 loops=1)
-        -> Aggregate using temporary table  (actual time=6903..6903 rows=6802 loops=1)
-            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.21e+6 rows=1.82e+6) (actual time=0.448..6728 rows=504462 loops=1)
-                -> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.415..5840 rows=11.2e+6 loops=1)
+Note: this resolves a real contradiction that existed in this file's
+previous version. The old single-run capture reported 6.77s here vs.
+7.94s for the baseline -- i.e. "faster." But the EXPLAIN ANALYZE output
+below was captured in that same run and shows the *opposite*: every
+internal step ran slower than the baseline's own EXPLAIN ANALYZE
+(e.g. the top-level Sort finished at ~6911ms here vs. ~6586ms for the
+baseline). Two single-shot measurements of the same underlying work
+can't both be true. The real multi-run mean (6.74s vs. baseline's
+6.99s) shows what actually happened: this index gave, at best, a
+marginal and noisy improvement -- well within the baseline's own
+run-to-run variance -- because the optimizer never used it (see below).
 
+-> Sort: total_revenue DESC  (actual time=6714..6715 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=6710..6710 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=6710..6710 rows=6802 loops=1)
+            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.21e+6 rows=1.82e+6) (actual time=0.38..6541 rows=504462 loops=1)
+                -> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.198..5682 rows=11.2e+6 loops=1)
+
+idx_pickup_time exists but is NOT used -- MySQL's optimizer chose a
+table scan instead. January covers ~31% of the table (3.47M of
+11.2M rows); at that selectivity, a secondary (non-covering) index
+means one random-access lookup per matching row to fetch the other
+columns, which the optimizer correctly judged more expensive than a
+sequential scan. This is a real, common outcome, not a bug -- and
+it's exactly what a covering index (next stage) fixes.

@@ -1,13 +1,27 @@
-Wall clock time (measured via Python, single run): 2.09s
+Captured via python_scripts/benchmark_query.py --table taxi_trips_partitioned
+(warm-up + 7 timed runs, partitioned table WITH idx_composite)
+
+Per-run wall-clock times (s): 1.9169, 1.9184, 1.9152, 1.9133, 2.4110, 1.9294, 1.9113
+mean=1.9879s  stddev=0.1866s  min=1.9113s  max=2.4110s
 Rows returned: 6802
 
--> Sort: total_revenue DESC  (actual time=1953..1953 rows=6802 loops=1)
-    -> Table scan on <temporary>  (actual time=1949..1949 rows=6802 loops=1)
-        -> Aggregate using temporary table  (actual time=1949..1949 rows=6802 loops=1)
-            -> Filter: ((taxi_trips_partitioned.trip_distance > 5) and (taxi_trips_partitioned.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=343892 rows=569207) (actual time=0.0199..1785 rows=504462 loops=1)
-                -> Covering index range scan on taxi_trips_partitioned using idx_composite over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)  (cost=343892 rows=1.71e+6) (actual time=0.0178..1482 rows=3.34e+6 loops=1)
-
+-> Sort: total_revenue DESC  (actual time=1987..1988 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=1983..1984 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=1983..1983 rows=6802 loops=1)
+            -> Filter: ((taxi_trips_partitioned.trip_distance > 5) and (taxi_trips_partitioned.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=343892 rows=569207) (actual time=0.0256..1820 rows=504462 loops=1)
+                -> Covering index range scan on taxi_trips_partitioned using idx_composite over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)  (cost=343892 rows=1.71e+6) (actual time=0.0236..1521 rows=3.34e+6 loops=1)
 
 --- Partition pruning proof (EXPLAIN FORMAT=TRADITIONAL) ---
 partitions: p_jan
 (p_feb, p_mar, p_future were not scanned)
+
+Honest result: this is NOT faster than the composite index alone
+(03_composite_index_explain.txt: mean=1.74s, stddev=0.015s). Partition
+pruning is confirmed working -- only p_jan is scanned -- but it's
+pruning to roughly the same rows the covering index was already
+jumping straight to, so stacking both here is redundant, and the
+noisier stddev (0.19s vs. 0.015s) suggests partition routing adds a
+small amount of overhead rather than removing work. See
+04b_partition_only_explain.txt for the isolated partition-alone
+result, which shows partitioning genuinely helps -- just not when a
+covering index for the same predicate already exists.

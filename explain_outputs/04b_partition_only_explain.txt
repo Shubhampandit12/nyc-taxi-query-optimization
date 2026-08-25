@@ -1,0 +1,35 @@
+Captured via python_scripts/benchmark_query.py --table taxi_trips_partitioned
+(warm-up + 7 timed runs, partitioned table with idx_composite DROPPED --
+isolates the effect of partitioning alone, since 04_partitioned_explain.txt
+tests partitioning + composite index together)
+
+Per-run wall-clock times (s): 2.1137, 2.1794, 2.1588, 2.0939, 2.0904, 2.0987, 2.0950
+mean=2.1186s  stddev=0.0358s  min=2.0904s  max=2.1794s
+Rows returned: 6802
+
+-> Sort: total_revenue DESC  (actual time=2214..2214 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=2211..2211 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=2211..2211 rows=6802 loops=1)
+            -> Filter: ((taxi_trips_partitioned.trip_distance > 5) and (taxi_trips_partitioned.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=377846 rows=126478) (actual time=0.118..2048 rows=504462 loops=1)
+                -> Table scan on taxi_trips_partitioned  (cost=377846 rows=3.42e+6) (actual time=0.0788..1740 rows=3.48e+6 loops=1)
+
+Result: partitioning alone (no index) is a real, substantial win --
+mean=2.12s vs. the unpartitioned/unindexed baseline's mean=6.99s, a
+~3.3x improvement -- because pruning to the January partition means
+scanning ~3.48M rows instead of the full 11.2M. It's the second-best
+single optimization tested here, beating the rejected single-column
+index (6.74s) and nearly matching the composite index (1.74s).
+
+This is what makes the 04_partitioned_explain.txt result (partition +
+index together = 1.99s, no better than the index alone) make sense:
+partitioning and the composite index are solving the *same* problem
+for this query (skip non-matching rows via the leading
+tpep_pickup_datetime predicate), so combining them doesn't compound.
+In production, partitioning's independent value shows up on queries
+that don't already have a covering index for the same predicate, or
+at a scale where a single partition still exceeds the buffer pool.
+
+NOTE: idx_composite was dropped to produce this file, then recreated
+immediately after to restore taxi_trips_partitioned to its normal
+state (see the composite index's cardinality stats reset slightly
+between captures as a result -- this doesn't affect the numbers above).

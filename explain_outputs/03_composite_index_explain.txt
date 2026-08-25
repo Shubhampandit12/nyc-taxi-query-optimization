@@ -1,9 +1,25 @@
-Wall clock time (measured via Python, single run): 1.87s
+Captured via python_scripts/benchmark_query.py --table taxi_trips
+(warm-up + 7 timed runs, after DROP idx_pickup_time / CREATE idx_composite)
+
+Per-run wall-clock times (s): 1.7355, 1.7427, 1.7349, 1.7398, 1.7375, 1.7267, 1.7741
+mean=1.7416s  stddev=0.0152s  min=1.7267s  max=1.7741s
 Rows returned: 6802
 
--> Sort: total_revenue DESC  (actual time=1833..1834 rows=6802 loops=1)
-    -> Table scan on <temporary>  (actual time=1830..1830 rows=6802 loops=1)
-        -> Aggregate using temporary table  (actual time=1830..1830 rows=6802 loops=1)
-            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.12e+6 rows=1.82e+6) (actual time=0.0183..1670 rows=504462 loops=1)
-                -> Covering index range scan on taxi_trips using idx_composite over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)  (cost=1.12e+6 rows=5.47e+6) (actual time=0.0158..1407 rows=3.34e+6 loops=1)
+Note: stddev here is <1% of the mean -- a striking contrast with the
+16% spread in the baseline (01_baseline_explain.txt) and the 7% spread
+in the rejected single-column index (02_single_index_explain.txt).
+A covering index doesn't just make the query faster on average, it
+makes it *predictable*: there's no heap-fetch random I/O left for
+cache state to make noisy.
 
+-> Sort: total_revenue DESC  (actual time=1852..1853 rows=6802 loops=1)
+    -> Table scan on <temporary>  (actual time=1848..1849 rows=6802 loops=1)
+        -> Aggregate using temporary table  (actual time=1848..1848 rows=6802 loops=1)
+            -> Filter: ((taxi_trips.trip_distance > 5) and (taxi_trips.tpep_pickup_datetime between '2025-01-01' and '2025-01-31'))  (cost=1.12e+6 rows=1.82e+6) (actual time=0.0188..1689 rows=504462 loops=1)
+                -> Covering index range scan on taxi_trips using idx_composite over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)  (cost=1.12e+6 rows=5.45e+6) (actual time=0.0167..1424 rows=3.34e+6 loops=1)
+
+4.0x faster than the baseline mean (6.99s -> 1.74s). This is the
+single biggest win in the project: bundling every column the query
+needs (filter, group-by, and aggregated columns) into one index
+eliminates the random-access heap fetch that made the single-column
+index not worth using.
