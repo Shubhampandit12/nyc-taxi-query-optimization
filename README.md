@@ -8,13 +8,15 @@ using `EXPLAIN ANALYZE`.
 ## 1. The Problem
 
 A single MySQL table holding 11.2 million real NYC Yellow Taxi trip
-records took **7.94 seconds** to answer a simple analytical question —
-"which pickup zones earned the most revenue on trips over 5 miles in
-January?" — because it had no indexes at all, so every query forced a
-full table scan. This project documents the systematic process of
-reducing that to **1.87–2.09 seconds** (a ~4x improvement), using
-indexing and partitioning strategies, and explains *why* each stage
-helped (or, in one case, didn't help as expected).
+records took **~7.0 seconds on average** (mean of 7 runs; see
+Section 4a) to answer a simple analytical question — "which pickup
+zones earned the most revenue on trips over 5 miles in January?" —
+because it had no indexes at all, so every query forced a full table
+scan. This project documents the systematic process of reducing that
+to **~1.7 seconds** (a real, measured ~4x improvement) using a
+composite covering index, and separately verifies what indexing and
+partitioning each actually contribute on their own — including two
+results that didn't match the obvious expectation (see Section 4a).
 
 ## 2. Dataset
 
@@ -96,21 +98,69 @@ zone and day, sum revenue.
 
 ## 4. Results Table
 
-| Stage | Wall-clock time | Execution plan | Key observation |
-|---|---|---|---|
-| No index (baseline) | 7.94s | `Table scan on taxi_trips` | Full scan of all 11.2M rows |
-| Single B-Tree index on `tpep_pickup_datetime` | 6.77s | `Table scan on taxi_trips` (index **not** used) | Optimizer rejected the index — see explanation below |
-| Composite covering index | 1.87s | `Covering index range scan using idx_composite` | ~4.2x faster than baseline; no heap fetches |
-| RANGE COLUMNS partitioning + composite index | 2.09s | `Covering index range scan` + `partitions: p_jan` only | Feb/Mar/future partitions never opened |
+Every number below is a **mean of 7 timed runs after a warm-up run**,
+via `python_scripts/benchmark_query.py`, not a single stopwatch
+capture. Stddev is included because it's informative on its own —
+see Section 4a.
 
-Raw `EXPLAIN ANALYZE` output for each stage is in
-[`explain_outputs/`](explain_outputs/).
+| Stage | Mean (7 runs) | Stddev | vs. baseline | Execution plan |
+|---|---|---|---|---|
+| 1. No index, no partition (baseline) | 6.99s | 1.15s (16%) | — | Table scan, 11.2M rows |
+| 2. Single B-Tree index on `tpep_pickup_datetime` | 6.74s | 0.45s | ~4% faster (noise) | Table scan (index **not** used) |
+| 3. Composite covering index | **1.74s** | 0.015s | **4.0x faster** | Covering index range scan |
+| 4. Partitioning + composite index | 1.99s | 0.19s | 3.5x faster, but *slower than stage 3* | Covering index range scan, `partitions: p_jan` only |
+| 4b. Partitioning alone (no index, isolated) | 2.12s | 0.036s | 3.3x faster | Table scan, `partitions: p_jan` only (3.48M rows) |
 
-*Note: these numbers are lower than the 30–90s the original project
-plan estimated — that estimate assumed 15M rows on unspecified
-hardware; this dataset is 11.2M rows on a fast local SSD. The
-mechanism proven at each stage (table scan → index scan → covering
-index → partition pruning) is what matters, not the absolute seconds.*
+Raw `EXPLAIN ANALYZE` output for every stage, including the run-by-run
+timings, is in [`explain_outputs/`](explain_outputs/).
+
+### 4a. Two results that didn't match the obvious expectation
+
+**Stage 2 (single index) is a false step.** The optimizer looked at
+the index and chose *not* to use it — see the deep dive below. The
+0.25s difference from baseline is smaller than baseline's own
+run-to-run stddev (1.15s), so it isn't a real effect.
+
+**Stage 4 (partitioning + index) doesn't beat stage 3 (index alone).**
+This looks like partitioning "not working," but it isn't — `EXPLAIN
+FORMAT=TRADITIONAL` confirms partition pruning is real (only `p_jan`
+is ever scanned). The actual explanation is in stage 4b: partitioning
+*alone*, with the index removed, gets 2.12s — a genuine ~3.3x win on
+its own, nearly matching the composite index's 1.74s. Partitioning
+and the composite index are solving the *same* problem for this
+query (skip everything outside January via the leading
+`tpep_pickup_datetime` predicate), so stacking them buys nothing, and
+the extra partition-routing overhead makes stage 4 slightly noisier
+(stddev 0.19s vs. stage 3's 0.015s) and marginally slower than stage
+3 alone. **The honest takeaway is not "partitioning didn't help" —
+it's "partitioning and a covering index are redundant when they
+target the same predicate."** Partitioning's independent value would
+show on a query that isn't already served by a matching index, or at
+a scale where a single partition still exceeds available memory (see
+Section 4b below).
+
+### 4b. Methodology and hardware caveats
+
+- **Multi-run, not single-shot:** each stage above is a warm-up run
+  followed by 7 timed runs (`time.perf_counter`), reporting
+  mean/stddev/min/max — see `python_scripts/benchmark_query.py`. An
+  earlier version of this project measured each stage once; the
+  baseline alone showed a 16% run-to-run swing, and one earlier
+  single-run capture (stage 2) reported a *faster* wall-clock time
+  than baseline while its own `EXPLAIN ANALYZE` showed it running
+  internally *slower* — two facts that can't both be true for the
+  same query. That contradiction is fully explained in
+  `explain_outputs/02_single_index_explain.txt`.
+- **Buffer pool vs. table size:** `innodb_buffer_pool_size` on the
+  machine these numbers were captured on is 128MB; the table's data
+  is ~1.8GB. InnoDB itself isn't caching the whole table, but the
+  machine has 8GB of RAM, so the OS filesystem cache can still warm
+  repeat reads across runs within a benchmark session. These numbers
+  reflect a laptop, not a server with a working set that exceeds
+  total RAM — partitioning and indexing would both matter more there.
+- **Hardware:** these numbers are lower than the 30–90s the original
+  project plan estimated, which assumed 15M rows on unspecified
+  hardware; this dataset is 11.2M rows on a local SSD.
 
 ## 5. Deep Dive Sections
 
@@ -133,17 +183,20 @@ non-January rows.
 
 In practice, the optimizer **declined to use it** here (see
 `explain_outputs/02_single_index_explain.txt`) and fell back to a
-table scan. The reason: the January date range covers about 31% of
-the entire table (3.47M of 11.2M rows). Using a secondary index means
-looking up each matching row's location in the index, then jumping
-to the actual table row to fetch the rest of the columns (a "heap
-fetch") — and at 31% selectivity, that's ~3.5 million random-access
-jumps, which costs more than reading the table sequentially. This is
-a real and common outcome: **an index only helps when it's selective
-enough that using it beats scanning past it**, and MySQL's cost-based
-optimizer correctly reasoned that a plain B-Tree index wasn't worth
-it at this selectivity. This is exactly the problem a covering index
-solves.
+table scan — confirmed across all 7 benchmark runs, not just one. The
+reason: the January date range covers about 31% of the entire table
+(3.47M of 11.2M rows). Using a secondary index means looking up each
+matching row's location in the index, then jumping to the actual
+table row to fetch the rest of the columns (a "heap fetch") — and at
+31% selectivity, that's ~3.5 million random-access jumps, which costs
+more than reading the table sequentially. This is a real and common
+outcome: **an index only helps when it's selective enough that using
+it beats scanning past it**, and MySQL's cost-based optimizer
+correctly reasoned that a plain B-Tree index wasn't worth it at this
+selectivity. The measured mean (6.74s vs. baseline's 6.99s) reflects
+that: the difference is smaller than the baseline's own run-to-run
+noise, i.e. not a real improvement. This is exactly the problem a
+covering index solves.
 
 ### What is a covering index, and why did it work?
 
@@ -154,10 +207,11 @@ columns (`tpep_pickup_datetime`, `trip_distance`), the group-by column
 data lives in the index itself, MySQL never needs to jump back to the
 actual table row (no heap fetch), even when scanning a large fraction
 of the table. That eliminated the random-access cost that sank the
-single-column index, dropping execution time from 6.77s to 1.87s —
-the single biggest improvement in this project.
+single-column index, dropping the mean execution time from 6.74s to
+1.74s — the single biggest, and most consistent (stddev 0.015s),
+improvement in this project.
 
-### What is partition pruning?
+### What is partition pruning — and why didn't it help on top of the index?
 
 Partitioning physically splits a table into separate storage segments
 based on a column's value — here, one segment per month
@@ -165,36 +219,56 @@ based on a column's value — here, one segment per month
 only touches January dates, MySQL doesn't just skip reading February
 and March rows — it never even opens those partitions' files on disk.
 `EXPLAIN FORMAT=TRADITIONAL` confirms this directly: the `partitions`
-column reads `p_jan` only. Combined with the composite index, this
-kept execution time essentially the same as the plain composite index
-(1.87s → 2.09s here, since the January partition itself still holds
-~3.5M matching rows) but would matter far more at larger scale, or for
-queries spanning a single day instead of a full month, or as more
-months of data are added — new partitions won't slow down queries
-that don't touch them.
+column reads `p_jan` only.
+
+Combined with the composite index (stage 4), this did **not** beat
+the plain composite index (stage 3): 1.74s → 1.99s, i.e. slightly
+*slower*, not faster. Tested in isolation with the index removed
+(stage 4b, `explain_outputs/04b_partition_only_explain.txt`),
+partitioning alone gets 2.12s — a real ~3.3x win over the
+unpartitioned/unindexed baseline. The reason stacking them doesn't
+compound is that **partitioning and the composite index are pruning
+the same rows for the same reason**: both use
+`tpep_pickup_datetime` to skip everything outside January. Once the
+index is already doing that job via a range scan, partition pruning
+has nothing left to add, and the partition-routing step adds a small
+amount of overhead instead (stage 4's stddev, 0.19s, is over 10x
+stage 3's). Partitioning's independent value would show on a query
+that isn't already served by a matching index, or once a single
+partition's data exceeds what fits in memory — at 11.2M rows on a
+laptop, this dataset doesn't reach that point (see Section 4b).
 
 ## 6. EXPLAIN ANALYZE Snippets
 
+Captured after warm-up, alongside the multi-run timings in Section 4
+(full plans with all node-level timings are in `explain_outputs/`).
+
 **Baseline:**
 ```
--> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.439..5546 rows=11.2e+6 loops=1)
+-> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=1.1..5638 rows=11.2e+6 loops=1)
 ```
 
 **Single index (rejected by optimizer):**
 ```
--> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.415..5840 rows=11.2e+6 loops=1)
+-> Table scan on taxi_trips  (cost=1.21e+6 rows=10.9e+6) (actual time=0.198..5682 rows=11.2e+6 loops=1)
 ```
 
 **Composite covering index:**
 ```
 -> Covering index range scan on taxi_trips using idx_composite
    over ('2025-01-01 00:00:00' <= tpep_pickup_datetime <= '2025-01-31 00:00:00' AND 5 < trip_distance)
-   (actual time=0.0158..1407 rows=3.34e+6 loops=1)
+   (actual time=0.0167..1424 rows=3.34e+6 loops=1)
 ```
 
 **Partitioned + composite index:**
 ```
 -> Covering index range scan on taxi_trips_partitioned using idx_composite ...
+partitions: p_jan   (p_feb, p_mar, p_future not scanned)
+```
+
+**Partitioned, index removed (isolates partition pruning alone):**
+```
+-> Table scan on taxi_trips_partitioned  (cost=377846 rows=3.42e+6) (actual time=0.0788..1740 rows=3.48e+6 loops=1)
 partitions: p_jan   (p_feb, p_mar, p_future not scanned)
 ```
 
@@ -222,6 +296,17 @@ to $108.9M (Mar).
 (6.34M trips, 57% of the total) but long trips (>10 miles) earn the
 most per trip ($59.07 avg fare vs $10.05 for short trips).
 
+**Known limitation, not yet verified live:** `idx_composite` is built
+specifically for the benchmark query's exact filter/group-by shape
+(`tpep_pickup_datetime` range + `trip_distance` filter, grouped by
+`PULocationID`). Several of the business queries above group by
+`HOUR(...)`/`MONTH(...)` (not sargable on a datetime index) or by
+columns not in the index (`payment_type`) — they likely run as full
+scans rather than benefiting from any of the optimization work in
+this project. This hasn't been confirmed with `EXPLAIN` yet; treat
+the numbers above as correct results, not as evidence the indexing
+strategy generalizes to this section.
+
 ## 8. How to Reproduce
 
 1. Download the NYC TLC Yellow Taxi parquet files for the months you
@@ -232,7 +317,7 @@ most per trip ($59.07 avg fare vs $10.05 for short trips).
 4. `export TAXI_DB_PASSWORD=your_mysql_password` (optionally
    `export TAXI_DB_USER=your_user`, defaults to `root`)
 5. Run `sql_migrations/01_create_table.sql` to create the `taxi_trips`
-   table with an explicit, designed schema (see Section 2a below —
+   table with an explicit, designed schema (see Section 2a above —
    this used to be pandas-inferred, which is why earlier versions of
    this README described running this step *after* ingestion).
 6. Run `python python_scripts/ingest_taxi_data.py` to load the parquet
