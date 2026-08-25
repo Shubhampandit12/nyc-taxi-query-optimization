@@ -296,16 +296,30 @@ to $108.9M (Mar).
 (6.34M trips, 57% of the total) but long trips (>10 miles) earn the
 most per trip ($59.07 avg fare vs $10.05 for short trips).
 
-**Known limitation, not yet verified live:** `idx_composite` is built
-specifically for the benchmark query's exact filter/group-by shape
+**Verified limitation:** `idx_composite` is built specifically for the
+benchmark query's exact filter/group-by shape
 (`tpep_pickup_datetime` range + `trip_distance` filter, grouped by
-`PULocationID`). Several of the business queries above group by
-`HOUR(...)`/`MONTH(...)` (not sargable on a datetime index) or by
-columns not in the index (`payment_type`) — they likely run as full
-scans rather than benefiting from any of the optimization work in
-this project. This hasn't been confirmed with `EXPLAIN` yet; treat
-the numbers above as correct results, not as evidence the indexing
-strategy generalizes to this section.
+`PULocationID`). Checked with `EXPLAIN FORMAT=TRADITIONAL` against the
+real dataset:
+
+| Query | `type` | `key` used | Result |
+|---|---|---|---|
+| 1. Peak Hour Revenue | `ALL` | none | Full scan, all 4 partitions — `HOUR(...)` isn't sargable |
+| 2. Tip by Payment Type | `ALL` | none | Full scan — `payment_type`/`fare_amount`/`tip_amount` aren't the index's leading column |
+| 3. Busiest Pickup Zones | `ALL` | none | Full scan — `PULocationID` is in the index but not leading |
+| 4. Month-over-Month | `ALL` | none | Full scan — `MONTH(...)` isn't sargable |
+| 5. Trip Category | `index` | `idx_composite` | Partial win: full index scan (not a range scan), avoids heap fetches since it's covering, but still touches all 10.9M index entries — no rows skipped |
+
+**4 of the 5 business queries get zero benefit from any optimization
+work in this project**, and the 5th gets a partial benefit rather than
+the selective win seen in the benchmark query. This confirms the
+suspicion: none of these queries filter on `tpep_pickup_datetime`
+(the index's and the partitioning's leading/pruning column), so
+neither optimization applies to them. A production fix would mean
+either a second index matching one of these access patterns (e.g. on
+`PULocationID` or `payment_type` alone) or accepting that this
+project's optimizations are scoped to one specific query shape, not
+a general-purpose speedup for the whole table.
 
 ## 8. How to Reproduce
 
