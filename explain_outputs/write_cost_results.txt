@@ -1,0 +1,62 @@
+Captured via python_scripts/measure_write_cost.py against the real
+dataset (1,000,000-row preload per config, then warm-up + 7 timed
+batch inserts of 5,000 rows each).
+
+=== bench_no_index ===
+  batch insert 1/7: 0.0437s (5,000 rows)
+  batch insert 2/7: 0.0459s (5,000 rows)
+  batch insert 3/7: 0.0424s (5,000 rows)
+  batch insert 4/7: 0.0514s (5,000 rows)
+  batch insert 5/7: 0.0429s (5,000 rows)
+  batch insert 6/7: 0.0465s (5,000 rows)
+  batch insert 7/7: 0.0416s (5,000 rows)
+  mean=0.0449s  stdev=0.0034s
+
+=== bench_single_index (idx_pickup_time) ===
+  batch insert 1/7: 0.0531s (5,000 rows)
+  batch insert 2/7: 0.0532s (5,000 rows)
+  batch insert 3/7: 0.0529s (5,000 rows)
+  batch insert 4/7: 0.0524s (5,000 rows)
+  batch insert 5/7: 0.0522s (5,000 rows)
+  batch insert 6/7: 0.0516s (5,000 rows)
+  batch insert 7/7: 0.0563s (5,000 rows)
+  mean=0.0531s  stdev=0.0015s
+
+=== bench_composite_index (idx_composite) ===
+  batch insert 1/7: 0.0601s (5,000 rows)
+  batch insert 2/7: 0.0527s (5,000 rows)
+  batch insert 3/7: 0.0589s (5,000 rows)
+  batch insert 4/7: 0.0527s (5,000 rows)
+  batch insert 5/7: 0.0584s (5,000 rows)
+  batch insert 6/7: 0.0528s (5,000 rows)
+  batch insert 7/7: 0.0580s (5,000 rows)
+  mean=0.0562s  stdev=0.0033s
+
+=== bench_partitioned (partitioned + idx_composite) ===
+  batch insert 1/7: 0.0753s (5,000 rows)
+  batch insert 2/7: 0.0670s (5,000 rows)
+  batch insert 3/7: 0.0662s (5,000 rows)
+  batch insert 4/7: 0.0711s (5,000 rows)
+  batch insert 5/7: 0.0791s (5,000 rows)
+  batch insert 6/7: 0.0728s (5,000 rows)
+  batch insert 7/7: 0.0768s (5,000 rows)
+  mean=0.0726s  stdev=0.0049s
+
+Storage (data_length / index_length, via information_schema after
+ANALYZE TABLE, at 1,005,000 rows per table):
+
+table                     data_mb   index_mb
+bench_no_index              175.7        0.0
+bench_single_index          175.7       29.6
+bench_composite_index       175.7       78.9
+bench_partitioned           175.8       78.9
+
+Summary vs. no-index baseline:
+  single index:      +18.3% slower writes, +16.8% storage overhead
+  composite index:   +25.2% slower writes, +44.9% storage overhead
+  partitioned+index: +61.7% slower writes, +44.9% storage overhead
+                      (+29.2% slower than composite index alone)
+
+Scratch tables (bench_*, bench_preload, bench_batch_0-7) were dropped
+after this run -- taxi_db only contains taxi_trips_partitioned
+between measurement sessions.

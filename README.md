@@ -284,6 +284,37 @@ partitions: p_jan   (p_feb, p_mar, p_future not scanned)
 partitions: p_jan   (p_feb, p_mar, p_future not scanned)
 ```
 
+## 6a. Trade-offs: Write Cost & Storage Overhead
+
+Indexes and partitioning aren't free — they cost write throughput and
+disk space. This wasn't measured anywhere in earlier versions of this
+project. `python_scripts/measure_write_cost.py` measures it directly:
+4 scratch tables (one per stage) are each preloaded with 1,000,000
+real rows, then timed on 7 batch inserts of 5,000 new rows each
+(warm-up + mean/stddev, same methodology as the read benchmarks).
+
+| Configuration | Mean insert time (5,000 rows) | vs. no index | Index storage (on 1.005M rows) |
+|---|---|---|---|
+| No index | 0.045s | — | 0 MB |
+| Single index (`idx_pickup_time`) | 0.053s | +18.3% slower | 29.6 MB (+16.8% over 175.7MB data) |
+| Composite index (`idx_composite`) | 0.056s | +25.2% slower | 78.9 MB (+44.9% over data) |
+| Partitioned + composite index | 0.073s | **+61.7% slower** | 78.9 MB (same index size; partitioning doesn't add index overhead) |
+
+**What this means for the earlier results:** the composite index that
+made reads ~4x faster (Section 4) also makes writes ~25% slower and
+uses 45% more disk than the data itself — a real cost, not a free
+lunch. Partitioning stacked on top roughly *doubles* that write
+penalty again (+61.7% vs. +25.2%) for a read benefit that Section 4a
+showed is redundant with the index it's stacked on. For a
+write-heavy system ingesting new trips continuously, the honest
+recommendation from this data is: **use the composite index, skip
+the partitioning** — it costs more on every write for no proven read
+benefit once the index is already in place. Partitioning would earn
+its write-cost back on a table large enough that a single partition
+still doesn't fit in memory, or on a workload with genuinely
+different (non-covered) query patterns per partition — neither is
+true for this 11.2M-row dataset.
+
 ## 7. Business Analytics Queries
 
 Run against the final `taxi_trips_partitioned` table
