@@ -5,3 +5,9 @@ pyarrow==25.0.1
 
 # Transitive dependency, pinned for reproducibility
 numpy==2.5.2
+
+# streamlit_app.py -- the live interactive demo (streamlit.app / Streamlit
+# Community Cloud). Not used by the ingestion/benchmark scripts, but kept
+# in the same requirements.txt since that's the file Streamlit Cloud reads
+# by default for a root-level streamlit_app.py.
+streamlit==1.62.0
